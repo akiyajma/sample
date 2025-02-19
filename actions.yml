@@ -1,0 +1,76 @@
+name: "Terraform CI/CD with OIDC"
+
+on:
+  pull_request:
+    branches:
+      - "**"
+    types: [opened, synchronize]
+
+  push:
+    branches:
+      - main
+
+jobs:
+  terraform:
+    name: "Terraform Execution"
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::758656810711:role/aws-techartist-odic-provider-github
+          aws-region: ap-northeast-1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Install TFLint
+        run: |
+          curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+
+      - name: Terraform Format
+        id: fmt
+        run: terraform fmt -check -recursive
+
+      - name: Run TFLint
+        id: tflint
+        run: tflint --init && tflint
+
+      - name: Terraform Init
+        id: init
+        run: terraform init -input=false
+
+      - name: Terraform Plan
+        id: plan
+        run: terraform plan -no-color
+        continue-on-error: true
+
+      - name: Comment PR with Plan Result
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fmtResult = `#### Terraform Format and Style 🖌\n\`${{ steps.fmt.outcome }}\``;
+            const tflintResult = `#### TFLint Analysis 🔍\n\`\`\`\n${{ steps.tflint.outputs.stdout || 'No issues found.' }}\n\`\`\``;
+            const planResult = `#### Terraform Plan 📖\n\`\`\`\n${{ steps.plan.outputs.stdout || 'No changes detected or an error occurred.' }}\n\`\`\``;
+            const body = `## Terraform checks\n` + fmtResult + `\n\n` + tflintResult + `\n\n` + planResult;
+            github.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            })
+
+      - name: Terraform Apply
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: terraform apply -auto-approve
